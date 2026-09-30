@@ -1,0 +1,40 @@
+# Access control for the mdb database.
+#
+# Why this file exists
+# --------------------
+# The Debian slapd package that osixia/openldap is built on seeds three default
+# rules. The last one is:
+#
+#   olcAccess: {2}to * by self read by dn="cn=admin,..." write by * none
+#
+# That denies read access to every account that is not the admin, including
+# ou=People — which is the base a search needs. The failure is misleading: the
+# service account binds fine (ldapwhoami succeeds) but any search or read comes
+# back as LDAP error 32 "no such object", because OpenLDAP reports an entry it
+# is hiding from you as missing rather than admitting that it exists and is
+# forbidden.
+#
+# What each identity may do
+# -------------------------
+#   admin       full manage. The rootdn, used to bootstrap the directory.
+#   svc-pcshop  read the tree, so it can look a handle up and read the three
+#               attributes the API needs (cn, uid, displayName). It is granted
+#               nothing on userPassword, so the service account cannot read
+#               anyone's password hash.
+#   self        read and write its own entry.
+#   anonymous   nothing but `auth` on userPassword, which is what lets a simple
+#               bind check a submitted password at all.
+#
+# Rules 0 and 1 are kept byte-identical to the Debian defaults on purpose. Rule
+# 0 ends in `by * break` and rule 1 is what grants `auth` during a simple bind;
+# reordering them, or granting read on * (which covers userPassword) in an
+# earlier rule, makes every non-admin bind fail with "invalid credentials".
+#
+# Applied on the first boot only. Changing these rules on a volume that has
+# already been initialised needs `docker compose down -v`.
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcAccess
+olcAccess: {0}to * by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage by * break
+olcAccess: {1}to attrs=userPassword,shadowLastChange by self write by dn="cn=admin,{{ LDAP_BASE_DN }}" write by anonymous auth by * none
+olcAccess: {2}to * by self read by dn="cn=admin,{{ LDAP_BASE_DN }}" write by dn="cn=svc-pcshop,ou=Services,{{ LDAP_BASE_DN }}" read by * none

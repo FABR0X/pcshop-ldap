@@ -1,0 +1,21 @@
+node_modules
+npm-debug.log*
+
+# Secrets and local config. .env.example stays: it documents the variables.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+*.log
+.DS_Store
+Thumbs.db
+
+README.md
+.vscode
+.idea
