@@ -1,88 +1,112 @@
 # pcshop-ldap
 
-Directorio OpenLDAP para el dashboard de componentes de PC. Es el **tercer repo**
-del entregable: aquí vive el origen de identidad contra el que el backend valida
-las credenciales antes de firmar el JWT.
+OpenLDAP directory for the PC component dashboard. This is the **third repo** of
+the deliverable: the source of identity the backend validates against before it
+signs a JWT.
 
-## Contenido
-
-| Archivo | Rol |
+| | |
 |---|---|
-| `Dockerfile` | Imagen `osixia/openldap:1.5.0` + hashing de contraseñas con `slappasswd` |
-| `bootstrap/10-people.ldif` | Seeds del directorio (personas + cuenta de servicio) |
-| `bootstrap/20-acl.ldif` | ACLs: la parte que hay que entender antes de tocar nada aquí |
+| Image | `osixia/openldap:1.5.0` |
+| Base DN | `dc=lab,dc=local` |
+| Host port | 1389 (mapped to 389 in the container) |
+| Bootstrapped by | `pcshop-backend/docker-compose.yml` |
+| Sibling repos | [`pcshop-frontend`](../pcshop-frontend) · [`pcshop-backend`](../pcshop-backend) |
 
-## Por qué existe `20-acl.ldif`
+## Files
 
-Este es el gotcha del repo, y no es evidente hasta que falla el login.
+| File | Role |
+|---|---|
+| `Dockerfile` | The `osixia/openldap:1.5.0` image plus password hashing with `slappasswd` |
+| `bootstrap/10-people.ldif` | Directory seeds (people + the service account) |
+| `bootstrap/20-acl.ldif` | Access rules — read this before touching anything here |
 
-Las ACLs por defecto que instala el paquete Debian de `slapd` terminan con:
+## Why `20-acl.ldif` exists
+
+This is the gotcha in this repo, and it is not obvious until a login fails.
+
+The ACLs installed by Debian's `slapd` package end with:
 
 ```
 olcAccess: {2} to * by self read by dn="cn=admin,..." write by * none
 ```
 
-Con esa regla, `svc-pcshop` **sí consegue hacer bind** (los binds simples no
-dependen de las ACLs) pero **no puede ver nada**: toda búsqueda devuelve
-`error 32 (no such object)`. El síntoma es desconcertante porque el bind de
-servicio parece correcto y el backend solo ve "usuario inexistente".
+With that rule, `svc-pcshop` **can bind successfully** (simple binds do not
+consult the ACLs) but **cannot see anything**: every search returns
+`error 32 (no such object)`. The symptom is misleading, because the service bind
+looks correct and the backend only ever reports "user does not exist".
 
-`20-acl.ldif` añade `by dn="cn=svc-pcshop,..." read` a la regla del árbol, sin
-tocar la regla de `userPassword`. El servicio puede buscar personas, pero no
-puede leer contraseñas — la validación real la hace un bind con el DN del usuario.
+`20-acl.ldif` adds `by dn="cn=svc-pcshop,..." read` to the tree rule without
+touching the `userPassword` rule. The service can search for people but cannot
+read passwords — the actual verification is a bind using the user's own DN.
 
-Las dos primeras reglas se dejan **idénticas a las de Debian**, y el orden importa:
+The first two rules are left **byte-identical to the Debian defaults**, and the
+order matters:
 
-- Reescribir el bloque entero rompe todos los binds simples no-admin con
-  `invalid credentials`, porque `by * break` de la regla `to *` corta el
-  recorrido antes de llegar a la regla del usuario.
-- Conceder `read` sobre `*` (que incluye `userPassword`) en una regla anterior
-  rompe el bind de la misma forma: el servidor evalúa el primer `access to`
-  que casa y no vuelve a mirar las siguientes.
+- Rewriting the whole block breaks every non-admin simple bind with
+  `invalid credentials`, because the `by * break` in the `to *` rule short
+  circuits evaluation before it ever reaches the user rule.
+- Granting `read` on `*` (which includes `userPassword`) in an earlier rule
+  breaks the bind the same way: the server evaluates the first matching
+  `access to` and does not reconsider the ones after it.
 
-## Cuentas sembradas
+## Seeded accounts
 
-| DN | Handle | Contraseña | Rol |
+| DN | Handle | Password | Role |
 |---|---|---|---|
-| `cn=juan,ou=People,dc=lab,dc=local` | `juan` | `LabPass-@juan` | Usuario de la aplicación |
-| `cn=maria,ou=People,dc=lab,dc=local` | `maria` | `LabPass-@maria` | Usuario de la aplicación |
-| `cn=svc-pcshop,ou=Services,dc=lab,dc=local` | — | `SvcPcshop-@2026` | Cuenta de servicio que usa el backend para *buscar* antes de hacer bind |
+| `cn=juan,ou=People,dc=lab,dc=local` | `juan` | `LabPass-@juan` | Application user |
+| `cn=maria,ou=People,dc=lab,dc=local` | `maria` | `LabPass-@maria` | Application user |
+| `cn=svc-pcshop,ou=Services,dc=lab,dc=local` | — | `SvcPcshop-@2026` | Service account the backend uses to *search* before binding |
 
-`cn=admin,dc=lab,dc=local` es el administrador de OpenLDAP. Su contraseña se
-inyecta desde `LDAP_ADMIN_PASSWORD` (ver `docker-compose.yml` en el repo
-backend, default `LdapAdmin-@2026`).
+`cn=admin,dc=lab,dc=local` is the OpenLDAP administrator. Its password is
+injected from `LDAP_ADMIN_PASSWORD` (see `docker-compose.yml` in the backend
+repo, default `LdapAdmin-@2026`).
 
-## Por qué `slappasswd` en el build
+The service account can list a person but cannot read their `userPassword`:
 
-El LDIF versionado contiene los *placeholders* `__JUAN_PW__`, `__MARIA_PW__` y
-`__SVC_PW__` — nunca contraseñas reales. El `Dockerfile` las sustituye por hashes
-SSHA durante el build, así que ni el repositorio ni el historial de la imagen
-guardan credenciales en texto plano.
+```console
+$ docker compose exec ldap ldapsearch -x -H ldap://127.0.0.1:389 \
+    -D "cn=svc-pcshop,ou=Services,dc=lab,dc=local" -w "SvcPcshop-@2026" \
+    -b "ou=People,dc=lab,dc=local" "(cn=juan)" userPassword
+...
+dn: cn=juan,ou=People,dc=lab,dc=local
+uid: juan
+displayName: Juan Perez
+# no userPassword attribute in the response
+```
 
-## Cambiar una contraseña
+That is the intended result, not a misconfiguration.
 
-Las contraseñas se hornean en la imagen, así que un cambio exige reconstruir y
-volver a crear el volumen (el directorio es *idempotente* en el primer arranque):
+## Why `slappasswd` runs at build time
 
-1. Edita el `Dockerfile` (el `slappasswd -s '...'` correspondiente).
-2. Edita el LDIF si agregas o quitas entradas.
-3. Desde `pcshop-backend/`: `docker compose down -v && docker compose up -d --build ldap`
+The committed LDIF holds the *placeholders* `__JUAN_PW__`, `__MARIA_PW__` and
+`__SVC_PW__` — never real passwords. The `Dockerfile` substitutes SSHA hashes
+during the build, so neither the repository nor the image history stores
+credentials in plain text.
 
-`down -v` es obligatorio: sin él el volumen `ldap-data` persiste y el bootstrap
-vuelve a aplicarse sobre una base ya poblada.
+## Changing a password
 
-## Uso directo
+Passwords are baked into the image, so a change means rebuilding and recreating
+the volume (the directory only bootstraps on first boot):
 
-El servicio se publica en el host en el puerto **1389** (mapeado a 389 dentro del
-contenedor) para no chocar con el OpenLDAP del proyecto anterior.
+1. Edit the `Dockerfile` (the matching `slappasswd -s '...'`).
+2. Edit the LDIF if you are adding or removing entries.
+3. From `pcshop-backend/`: `docker compose down -v && docker compose up -d --build ldap`
+
+The `down -v` is mandatory: without it the `ldap-data` volume persists and the
+bootstrap runs again on top of an already-populated database.
+
+## Running it
+
+The service publishes on host port **1389** (mapped to 389 inside the container)
+to avoid colliding with the previous project's OpenLDAP.
 
 ```powershell
-# Verificar que el directorio responde
+# Confirm the directory answers
 docker compose exec ldap ldapsearch -x -H ldap://127.0.0.1:389 `
   -D "cn=admin,dc=lab,dc=local" -w "LdapAdmin-@2026" -b "dc=lab,dc=local" "(objectClass=*)" dn
 ```
 
-## Estructura del árbol
+## Tree layout
 
 ```
 dc=lab,dc=local
