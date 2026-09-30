@@ -10,6 +10,35 @@ las credenciales antes de firmar el JWT.
 |---|---|
 | `Dockerfile` | Imagen `osixia/openldap:1.5.0` + hashing de contraseñas con `slappasswd` |
 | `bootstrap/10-people.ldif` | Seeds del directorio (personas + cuenta de servicio) |
+| `bootstrap/20-acl.ldif` | ACLs: la parte que hay que entender antes de tocar nada aquí |
+
+## Por qué existe `20-acl.ldif`
+
+Este es el gotcha del repo, y no es evidente hasta que falla el login.
+
+Las ACLs por defecto que instala el paquete Debian de `slapd` terminan con:
+
+```
+olcAccess: {2} to * by self read by dn="cn=admin,..." write by * none
+```
+
+Con esa regla, `svc-pcshop` **sí consegue hacer bind** (los binds simples no
+dependen de las ACLs) pero **no puede ver nada**: toda búsqueda devuelve
+`error 32 (no such object)`. El síntoma es desconcertante porque el bind de
+servicio parece correcto y el backend solo ve "usuario inexistente".
+
+`20-acl.ldif` añade `by dn="cn=svc-pcshop,..." read` a la regla del árbol, sin
+tocar la regla de `userPassword`. El servicio puede buscar personas, pero no
+puede leer contraseñas — la validación real la hace un bind con el DN del usuario.
+
+Las dos primeras reglas se dejan **idénticas a las de Debian**, y el orden importa:
+
+- Reescribir el bloque entero rompe todos los binds simples no-admin con
+  `invalid credentials`, porque `by * break` de la regla `to *` corta el
+  recorrido antes de llegar a la regla del usuario.
+- Conceder `read` sobre `*` (que incluye `userPassword`) en una regla anterior
+  rompe el bind de la misma forma: el servidor evalúa el primer `access to`
+  que casa y no vuelve a mirar las siguientes.
 
 ## Cuentas sembradas
 
